@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="pikachurunner.png" type="image/png" />
+  <title>Pikachu Runner</title>
+  <style>
+      :root{--bg:#f7f7f7;--ground:#555;--text:#333}
+    html,body{
+      height:100%;
+      margin:0;
+      font-family:Inter,system-ui,Segoe UI,Roboto,Arial;
+      background:linear-gradient(#e9f2ff, var(--bg));
+    }
+    .wrap{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      height:100%;
+      width:100%;
+      overflow:hidden;
+    }
+    /* --- Responsive canvas --- */
+    canvas{
+      background:transparent;
+      border:4px solid rgba(0,0,0,0.06);
+      border-radius:8px;
+      box-shadow:0 6px 20px rgba(0,0,0,0.08);
+      max-width:95vw;     /* shrink on small screens */
+      max-height:40vh;    /* keep some vertical room on phones */
+      width:900px;        /* desktop default */
+      height:200px;       /* desktop default */
+    }
+    .ui{
+      position:fixed;
+      top:18px;
+      right:18px;
+      color:var(--text);
+      font-size:14px;
+    }
+    .hint{
+      position:fixed;
+      left:18px;
+      top:18px;
+      color:#666;
+      font-size:13px;
+      max-width:80%;
+    }
+    @media (max-width:600px){
+      .ui{font-size:12px;top:10px;right:10px;}
+      .hint{font-size:11px;left:10px;top:10px;}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="900" height="200"></canvas>
+  </div>
+  <div class="ui">Score: <span id="score">0</span></div>
+  <div class="hint">Press <strong>Space</strong> or <strong>Up</strong> to jump — Tap / Click to jump on mobile/desktop</div>
+
+<script>
+(() => {
+ 
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+
+  // --- Responsive resize ---
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+
+    // take current CSS size of the canvas element after CSS scaling
+    const rect = canvas.getBoundingClientRect();
+    const wCss = rect.width;
+    const hCss = rect.height;
+
+    canvas.width  = Math.round(wCss * dpr);
+    canvas.height = Math.round(hCss * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    w = wCss;
+    h = hCss;
+    groundY = h - 30;
+
+    mountains = [{ x: 0 }, { x: w }];
+    hills = [{ x: 0 }, { x: w }];
+    initStars();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // Game settings & state
+   let w = canvas.width, h = canvas.height;
+  let groundY = h - 30;
+  let gravity = 0.9;
+  let speed = 10;
+  let spawnTimer = 0;
+  let spawnInterval = 90;
+  let running = false;
+  let gameOver = false;
+  let frame = 0;
+  let highScore = 0;
+  let score = 0;
+
+  // Day/Night cycle
+  let dayLength = 2000;
+  let cycleProgress = 0;
+  let isNight = false;
+  let stars = [];
+  function initStars() {
+    stars = [];
+    for (let i = 0; i < 40; i++) {
+      stars.push({ x: Math.random() * w, y: Math.random() * h * 0.6, r: Math.random() * 2 + 1 });
+    }
+  }
+
+  // Clouds
+  let clouds = [];
+  function spawnCloud() {
+    if (!isNight && Math.random() < 0.02) {
+      clouds.push({ x: w, y: 30 + Math.random() * 60, w: 50 + Math.random() * 40 });
+    }
+  }
+
+  // Moon + phases
+  let moonPhase = 0;
+  function drawMoon() {
+    const size = 24;
+    const x = w - 80, y = 40;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fill();
+
+    // subtle crescent/different phases (kept simple)
+    ctx.fillStyle = isNight ? '#001' : '#eaf5ff';
+    if (moonPhase === 1) {
+      ctx.beginPath();
+      ctx.arc(x + 6, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (moonPhase === 2) {
+      ctx.beginPath();
+      ctx.arc(x - 6, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (moonPhase === 3) {
+      ctx.beginPath();
+      ctx.arc(x + 10, y, size * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Parallax
+  let mountains = [{ x: 0 }, { x: w }];
+  let hills = [{ x: 0 }, { x: w }];
+  function drawMountains() {
+    ctx.fillStyle = isNight ? '#113' : '#99c';
+    mountains.forEach(m => {
+      ctx.beginPath();
+      ctx.moveTo(m.x, groundY);
+      ctx.lineTo(m.x + 150, groundY - 60);
+      ctx.lineTo(m.x + 300, groundY);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+  function drawHills() {
+    ctx.fillStyle = isNight ? '#141' : '#6c6';
+    hills.forEach(hs => {
+      ctx.beginPath();
+      ctx.moveTo(hs.x, groundY);
+      ctx.quadraticCurveTo(hs.x + 75, groundY - 25, hs.x + 150, groundY);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+  function updateParallax() {
+    mountains.forEach(m => m.x -= speed * 0.2);
+    hills.forEach(hs => hs.x -= speed * 0.5);
+    if (mountains.length && mountains[0].x + 300 < 0) {
+      mountains.shift();
+      mountains.push({ x: mountains[mountains.length - 1].x + 300 });
+    }
+    if (hills.length && hills[0].x + 150 < 0) {
+      hills.shift();
+      hills.push({ x: hills[hills.length - 1].x + 150 });
+    }
+  }
+
+  // Sparks
+  let sparks = [];
+  function spawnSparks(x, y) {
+    for (let i = 0; i < 12; i++) {
+      sparks.push({
+        x: x + Math.random() * 20,
+        y: y,
+        vx: (Math.random() - 0.5) * 3,
+        vy: -Math.random() * 3,
+        life: 20 + Math.random() * 10,
+        color: (i % 2 === 0 ? 'yellow' : 'deepskyblue')
+      });
+    }
+  }
+  function updateSparks() {
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      let s = sparks[i];
+      s.x += s.vx;
+      s.y += s.vy;
+      s.life--;
+      if (s.life <= 0) sparks.splice(i, 1);
+    }
+  }
+  function drawSparks() {
+    sparks.forEach(s => {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(s.x, s.y, 3, 3);
+    });
+  }
+
+  // --- Pikachu ---
+  const pikachu = {
+    x: 50,
+    y: groundY - 40,
+    w: 44,
+    h: 40,
+    vy: 0,
+    jumping: false,
+    draw() {
+      ctx.fillStyle = '#ffcc00';
+      ctx.fillRect(this.x, this.y, this.w, this.h);
+      ctx.fillStyle = '#ffcc00';
+      ctx.fillRect(this.x + 4, this.y - 10, 6, 10);
+      ctx.fillRect(this.x + this.w - 10, this.y - 10, 6, 10);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(this.x + 4, this.y - 10, 6, 4);
+      ctx.fillRect(this.x + this.w - 10, this.y - 10, 6, 4);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(this.x + 10, this.y + 12, 4, 4);
+      ctx.fillRect(this.x + 26, this.y + 12, 4, 4);
+      ctx.fillStyle = 'red';
+      ctx.fillRect(this.x + 6, this.y + 22, 4, 4);
+      ctx.fillRect(this.x + this.w - 10, this.y + 22, 4, 4);
+      ctx.fillStyle = '#ffcc00';
+      ctx.fillRect(this.x + this.w, this.y + 10, 8, 4);
+      ctx.fillRect(this.x + this.w + 4, this.y, 4, 10);
+      if (!this.jumping) {
+        ctx.fillStyle = '#ffcc00';
+        ctx.fillRect(this.x + 8, this.y + this.h, 6, 6);
+        ctx.fillRect(this.x + 26, this.y + this.h, 6, 6);
+      }
+    },
+    update() {
+      this.vy += gravity;
+      this.y += this.vy;
+      if (this.y >= groundY - this.h) {
+        this.y = groundY - this.h;
+        this.vy = 0;
+        this.jumping = false;
+      }
+    },
+    jump() {
+      if (!this.jumping) {
+        this.vy = -16;
+        this.jumping = true;
+        spawnSparks(this.x + this.w / 2, this.y + this.h / 2);
+        // safe play wrapper
+        try {
+          if (sounds && sounds.jump && typeof sounds.jump.play === 'function') {
+            sounds.jump.currentTime = 0;
+            sounds.jump.play().catch(() => { });
+          }
+        } catch (e) { /* ignore */ }
+      }
+    }
+  };
+
+  // Obstacles
+  let obstacles = [];
+  function spawnObstacle() {
+    if (Math.random() < 0.75) {
+      // triple Pokéball train (15% of this branch)
+      if (Math.random() < 0.15) {
+        for (let i = 0; i < 3; i++) {
+          const size = 28 + Math.random() * 24;
+          obstacles.push({ type: 'pokeball', x: w + 20 + i * (size + 30), y: groundY - size, w: size, h: size, angle: 0, spinSpeed: 0.25 });
+        }
+      }
+      // two Pokéballs (25% of this branch)
+      else if (Math.random() < 0.25) {
+        const size1 = 28 + Math.random() * 24;
+        const size2 = 28 + Math.random() * 24;
+        obstacles.push({ type: 'pokeball', x: w + 20, y: groundY - size1, w: size1, h: size1, angle: 0, spinSpeed: 0.15 });
+        obstacles.push({ type: 'pokeball', x: w + 20 + size1 + 40, y: groundY - size2, w: size2, h: size2, angle: 0, spinSpeed: 0.15 });
+      } else {
+        // single pokeball
+        const size = 28 + Math.random() * 24;
+        obstacles.push({ type: 'pokeball', x: w + 20, y: groundY - size, w: size, h: size, angle: 0, spinSpeed: 0.12 });
+      }
+    } else {
+      // zubat (flying)
+      const size = 28;
+      const flyHeight = groundY - 80 - Math.random() * 40;
+      obstacles.push({ type: 'zubat', x: w + 20, y: flyHeight, w: size, h: size, wing: 0 });
+    }
+  }
+
+  // Drawing obstacles
+  function drawPokeball(x, y, size, angle) {
+    ctx.save();
+    ctx.translate(x + size / 2, y + size / 2);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+    ctx.fillStyle = "white";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 2, Math.PI, 0);
+    ctx.fillStyle = "red";
+    ctx.fill();
+    ctx.strokeStyle = "black";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "black";
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "white";
+    ctx.beginPath();
+    ctx.arc(0, 0, size / 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  function drawZubat(x, y, size, wing) {
+    ctx.fillStyle = '#4b0082';
+    ctx.fillRect(x, y, size * 0.6, size * 0.5);
+    let wingOffset = (wing < 10 ? -8 : 8);
+    ctx.fillStyle = '#5d3fd3';
+    ctx.fillRect(x - size * 0.8, y + wingOffset, size * 0.8, 6);
+    ctx.fillRect(x + size * 0.6, y + wingOffset, size * 0.8, 6);
+    ctx.fillStyle = 'white';
+    ctx.fillRect(x + 4, y + 4, 4, 4);
+    ctx.fillRect(x + size * 0.6 - 8, y + 4, 4, 4);
+    ctx.fillStyle = 'black';
+    ctx.fillRect(x + 5, y + 5, 2, 2);
+    ctx.fillRect(x + size * 0.6 - 7, y + 5, 2, 2);
+  }
+
+  // Weather
+  let weather = "clear"; // "rain" | "snow" | "clear"
+  let weatherTimer = 0;
+  let particles = [];
+  function spawnWeather() {
+    if (weather === "rain") {
+      particles.push({ x: Math.random() * w, y: 0, vx: 0, vy: 8, len: 12 });
+    } else if (weather === "snow") {
+      particles.push({ x: Math.random() * w, y: 0, vx: Math.random() * 1 - 0.5, vy: 1 + Math.random() * 1, len: 5 });
+    }
+  }
+
+  function updateWeather() {
+    weatherTimer++;
+    if (weatherTimer > 1200) {
+      // change weather roughly every ~20s (at 60fps)
+      const types = ["clear", "rain", "snow"];
+      weather = types[Math.floor(Math.random() * types.length)];
+      weatherTimer = 0;
+      particles = [];
+    }
+    if (Math.random() < 0.3) spawnWeather();
+    for (let i = particles.length - 1; i >= 0; i--) {
+      let p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.y > h || p.x < -50) particles.splice(i, 1);
+    }
+  }
+  function drawWeather() {
+    if (weather === "rain") {
+      ctx.strokeStyle = "rgba(173,216,230,0.7)";
+      ctx.lineWidth = 2;
+      particles.forEach(p => {
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x, p.y + p.len);
+        ctx.stroke();
+      });
+      if (Math.random() < 0.01) {
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        ctx.fillRect(0, 0, w, h);
+      }
+    } else if (weather === "snow") {
+      ctx.fillStyle = "white";
+      particles.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.len, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      if (Math.random() < 0.01) {
+        ctx.fillStyle = "rgba(255,255,255,0.1)";
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+  }
+
+  // Meteors / night elements
+  let meteors = [];
+  function spawnMeteor() {
+    meteors.push({ x: Math.random() * w, y: 0, vx: -6, vy: 3, len: 40 });
+  }
+  function updateMeteors() {
+    if (isNight && Math.random() < 0.005) spawnMeteor();
+    meteors.forEach(m => { m.x += m.vx; m.y += m.vy; });
+    meteors = meteors.filter(m => m.x > -50 && m.y < h + 50);
+  }
+  function drawMeteors() {
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 2;
+    meteors.forEach(m => {
+      ctx.beginPath();
+      ctx.moveTo(m.x, m.y);
+      ctx.lineTo(m.x + m.len * m.vx / 10, m.y + m.len * m.vy / 10);
+      ctx.stroke();
+    });
+  }
+  function drawAurora() {
+    if (isNight) {
+      let g = ctx.createLinearGradient(0, 0, w, h / 2);
+      g.addColorStop(0, "rgba(0,255,150,0.2)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h / 2);
+    }
+  }
+  function drawGlowEyes() {
+    if (isNight && Math.random() < 0.02) {
+      ctx.fillStyle = "red";
+      let gx = Math.random() * w, gy = groundY - 10;
+      ctx.fillRect(gx, gy, 3, 3);
+      ctx.fillRect(gx + 8, gy, 3, 3);
+    }
+  }
+
+  // Reset / start
+  const sounds = {
+    jump: {
+      play: () => Promise.resolve(),
+      currentTime: 0
+    }
+  };
+  function startBGM() {
+    // no-op default. If you add audio, override via window.game.setStartBGM(fn)
+  }
+
+  function reset() {
+    running = true;
+    gameOver = false;
+    score = 0;
+    obstacles = [];
+    weather = "clear";
+    weatherTimer = 0;
+    pikachu.y = groundY - pikachu.h;
+    pikachu.vy = 0;
+    pikachu.jumping = false;
+    try { if (typeof startBGM === 'function') startBGM(); } catch (e) {}
+  }
+
+  // Core update loop
+  function update() {
+    if (!running) return;
+    frame++;
+    if (score % 500 === 0 && score > 0) {
+      speed += 0.5;
+    }
+
+    if (keys.jump) pikachu.jump();
+    pikachu.update();
+    updateSparks();
+
+    spawnTimer++;
+    if (spawnTimer > spawnInterval) {
+      spawnObstacle();
+      spawnTimer = 0;
+      spawnInterval = 60 + Math.floor(Math.random() * 80);
+    }
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      let o = obstacles[i];
+      o.x -= speed;
+      if (o.type === 'zubat') {
+        o.wing = (o.wing + 1) % 20;
+      }
+      if (o.type === 'pokeball') {
+        o.angle += (o.spinSpeed * speed / 10);
+      }
+      if (rectsOverlap(pikachu, o)) {
+        running = false;
+        gameOver = true;
+        if (score > highScore) highScore = score;
+      }
+      if (o.x + o.w < -50) obstacles.splice(i, 1);
+    }
+
+    spawnCloud();
+    clouds.forEach(c => c.x -= 1);
+    clouds = clouds.filter(c => c.x + c.w > 0);
+    updateParallax();
+    updateWeather();
+    updateMeteors();
+    updateSparks();
+
+    score += 1;
+    if (scoreEl) scoreEl.textContent = Math.floor(score / 10);
+
+    cycleProgress++;
+    if (cycleProgress > dayLength) {
+      isNight = !isNight;
+      cycleProgress = 0;
+      if (isNight) moonPhase = (moonPhase + 1) % 4;
+    }
+  }
+
+  // simple AABB collision
+  function rectsOverlap(a, b) {
+    return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+  }
+
+  function drawBackground() {
+    if (isNight) {
+      ctx.fillStyle = '#001';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#fff';
+      stars.forEach(s => ctx.fillRect(s.x, s.y, s.r, s.r));
+      drawMoon();
+      drawAurora();
+      drawMeteors();
+      drawGlowEyes();
+    } else {
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#eaf5ff');
+      g.addColorStop(1, '#f7f7f7');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#fff';
+      clouds.forEach(c => {
+        ctx.beginPath();
+        ctx.ellipse(c.x, c.y, c.w * 0.6, 15, 0, 0, Math.PI * 2);
+        ctx.ellipse(c.x + 20, c.y + 5, c.w * 0.5, 12, 0, 0, Math.PI * 2);
+        ctx.ellipse(c.x - 20, c.y + 5, c.w * 0.5, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+    drawMountains();
+    drawHills();
+    drawWeather();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+    drawBackground();
+
+    // ground
+    ctx.fillStyle = '#666';
+    ctx.fillRect(0, groundY, w, h - groundY);
+
+    // pikachu + effects
+    pikachu.draw();
+    drawSparks();
+
+    // obstacles
+    obstacles.forEach(o => {
+      if (o.type === 'pokeball') drawPokeball(o.x, o.y, o.w, o.angle);
+      if (o.type === 'zubat') drawZubat(o.x, o.y, o.w, o.wing);
+    });
+
+    // HUD
+    ctx.fillStyle = isNight ? '#fff' : '#222';
+    ctx.font = '16px Inter, Arial';
+    ctx.textAlign = 'right';
+    ctx.fillText('SCORE: ' + Math.floor(score / 10), w - 14, 26);
+
+    // paused / game over overlay
+    if (!running) {
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillRect(w / 2 - 150, h / 2 - 40, 300, 80);
+      ctx.fillStyle = '#222';
+      ctx.textAlign = 'center';
+      ctx.font = '18px Inter, Arial';
+      ctx.fillText(gameOver ? 'Game Over — Tap to restart' : 'Paused', w / 2, h / 2);
+      ctx.font = '13px Inter, Arial';
+      ctx.fillText('High score: ' + Math.floor(highScore / 10), w / 2, h / 2 + 26);
+    }
+  }
+
+  // Input
+  let keys = {};
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      keys.jump = true;
+      if (!running) reset();
+    }
+    if (e.code === 'KeyR' && gameOver) {
+      reset();
+    }
+  });
+  document.addEventListener('keyup', e => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      keys.jump = false;
+    }
+  });
+
+  // touch and mouse
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    keys.jump = true;
+    if (!running) reset();
+  }, { passive: false });
+  canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    keys.jump = false;
+  }, { passive: false });
+
+  // click for desktop
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    keys.jump = true;
+    if (!running) reset();
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    e.preventDefault();
+    keys.jump = false;
+  });
+
+  // main loop
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // init
+  resizeCanvas();
+  initStars();
+  reset();
+  loop();
+
+  // expose some hooks for page-level audio or control (optional)
+  window.game = {
+    reset,
+    pause: () => { running = false; },
+    resume: () => { running = true; },
+    setSounds: (s) => Object.assign(sounds, s),
+    setStartBGM: (fn) => { startBGM = fn; }
+  };
+})();
+</script>
+
+</body>
+</html>
